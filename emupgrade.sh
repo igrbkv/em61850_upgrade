@@ -54,31 +54,34 @@ pkg_upgrade() {
     for pkg in ${packages[*]}
     do
         pkg=(${pkg//\// })
-        pkg=${pkg[-1]}
-        pkg=${pkg//.tbz2/}
-        qmerge -KyO $pkg >/dev/null 2>&1
+		if [ ${#pkg[@]} -gt 1 ]; then
+			fld=${pkg[-2]}
+			pkg=${pkg[-1]}
+			pkg=${pkg//.tbz2/}
+		fi
+        qmerge -KyO "$fld/$pkg" >/dev/null 2>&1
     done
 }
 
 sync_board_upgrade() {
 	sync_file=$(ls ${SYNC_FIRMWARE_TEMPLATE} 2>/dev/null)
-	if [ -e ${sync_file} ]; then
+	if [ -e "${sync_file}" ]; then
 		[ ${DEBUG} -gt 0 ] && em_logger "sync board upgrade with ${sync_file} ..."
-		/usr/bin/emsyncupgrade.py
+		/usr/bin/emsyncupgrade.py "${PORTAGE}/${sync_file}"
 		[ $? -gt 0 ] && em_logger "sync board upgrade failed!"
 	fi
 }
 
 adc_board_upgrade() {
 	adc_file=$(ls ${ADC_FIRMWARE_TEMPLATE} 2>/dev/null)
-	if [ -e ${adc_file} ]; then
+	if [ -e "${adc_file}" ]; then
 		[ ${DEBUG} -gt 0 ] && em_logger "adc board upgrade with ${adc_file} ..."
-		/usr/bin/emadcupgrade.py
+		/usr/bin/emadcupgrade.py "${PORTAGE}/${adc_file}"
 		[ $? -gt 0 ] && em_logger "adc board upgrade failed!"
 	fi
 }
 
-[ ${debug} -gt 0 ] && em_logger "upgrade started"
+[ ${DEBUG} -gt 0 ] && em_logger "upgrade started"
 # usb устройство подключено
 [ -b ${USB_DEV} ] || die ""
 mkdir -p ${MOUNT_POINT}
@@ -92,6 +95,7 @@ em_logger "Запуск обновления ..."
 cd ${PORTAGE}
 install_tar_ball || die "Ошибка распаковки архива ${DISTR_PATH}"
 pkg_upgrade
+em_logger $(echo $PWD)
 sync_board_upgrade
 adc_board_upgrade
 

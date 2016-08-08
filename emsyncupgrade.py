@@ -185,6 +185,7 @@ class Socket(Packet):
 
     def sync_upgrade(self):
         image_path = sys.argv[1]
+        print(image_path)
         sz = path.getsize(image_path)
         if sz != 768 * 1024:
             raise BaseException('Bad file size:' + sz)
@@ -232,8 +233,10 @@ class Socket(Packet):
 def main():
     try:
         syslog.openlog('emupgrade')
-        ret = 0
+        syslog.syslog('emsyncupgrade')
+        ret = -1
         Socket().sync_upgrade()
+        ret = 0
     except FileNotFoundError as e:
         syslog.syslog(e)
         ret = 1
@@ -247,9 +250,11 @@ def main():
         syslog.syslog('*** timeout')
         ret = 4
     except:
-        syslog.syslog('Unknown error!')
+        # syslog.syslog('Unknown error!')
         ret = 5
     finally:
+        if ret == -1:
+            syslog.syslog('Unknown error!')
         sys.exit(ret)
 
 
