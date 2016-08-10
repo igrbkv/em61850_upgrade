@@ -12,7 +12,9 @@ import syslog
 
 SIOCGIFADDR = 0x8915
 IP_ADR_GAIN = 2
-DEBUG = 1
+DEBUG = 2
+MAX_ATTEMPTS = 15
+
 
 class Tlv:
     def make_tlv(self, tag, val):
@@ -113,10 +115,21 @@ class Socket(Packet):
 
     def _host(self):
         """
-        sync_brd_ip = em_ip + 1 (e.g. 10.0.40.12 ==> 10.0.40.13)
+        sync_brd_ip = em_ip + IP_ADR_GAIN (e.g. 10.0.40.12 ==> 10.0.40.13)
         """
-        ifaces = listdir('/sys/class/net/')
+        # wait for ethernet initialization
         iface = None
+        for attmpt in range(MAX_ATTEMPTS):
+            ifaces = listdir('/sys/class/net/')
+            for i in ifaces:
+                if i[0] == 'e':
+                    iface = i
+                    break
+            sleep(1)
+        if iface is None:
+            raise BaseException('Ethernet interface is not exist!')
+
+        ifaces = listdir('/sys/class/net/')
         for i in ifaces:
             if i[0] == 'b':
                 iface = i

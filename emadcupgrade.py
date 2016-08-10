@@ -9,10 +9,13 @@ import socket
 from os import path
 import struct
 import syslog
+from time import sleep
 
 SIOCGIFADDR = 0x8915
 IP_ADR_GAIN = 1
 DEBUG = 1
+MAX_ATTEMPTS = 15
+
 
 class Tlv:
     def make_tlv(self, tag, val):
@@ -113,16 +116,27 @@ class Socket(Packet):
 
     def _host(self):
         """
-        sync_brd_ip = em_ip + IP_ADR_GAIN (e.g. 10.0.40.12 ==> 10.0.40.14)
+        adc_brd_ip = em_ip + IP_ADR_GAIN (e.g. 10.0.40.12 ==> 10.0.40.14)
         """
-        ifaces = listdir('/sys/class/net/')
+        # wait for ethernet initialization
         iface = None
+        for attmpt in range(MAX_ATTEMPTS):
+            ifaces = listdir('/sys/class/net/')
+            for i in ifaces:
+                if i[0] == 'e':
+                    iface = i
+                    break
+            sleep(1)
+        if iface is None:
+            raise BaseException('Ethernet interface is not exist!')
+
+        ifaces = listdir('/sys/class/net/')
         for i in ifaces:
             if i[0] == 'b':
                 iface = i
                 break
         if iface is None:
-            raise BaseException('Network interface not exist!')
+            raise BaseException('Network interface is not exist!')
         host = socket.inet_ntoa(fcntl.ioctl(
             self.sock.fileno(), SIOCGIFADDR,
             struct.pack('256s', iface[:15].encode('utf-8')))[20:24])

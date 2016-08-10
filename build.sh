@@ -15,7 +15,7 @@ if (( EUID != 0 )); then
     echo "You must be root to do this." 1>&2
     exit 1
 fi
-VERSION_PATH=/home/igor/workspace/EM61850/version
+VERSION_PATH=/home/igor/workspace/EM61850/emupgrade/version
 PACKAGES_DIR=/usr/portage/packages
 
 get_version() {
