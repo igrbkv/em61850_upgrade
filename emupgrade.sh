@@ -58,8 +58,8 @@ pkg_upgrade() {
 			fld=${pkg[-2]}
 			pkg=${pkg[-1]}
 			pkg=${pkg//.tbz2/}
+			qmerge -KyO "$fld/$pkg" >/dev/null 2>&1
 		fi
-        qmerge -KyO "$fld/$pkg" >/dev/null 2>&1
     done
 }
 
@@ -68,7 +68,7 @@ sync_board_upgrade() {
 	if [ -e "${sync_file}" ]; then
 		[ ${DEBUG} -gt 0 ] && em_logger "sync board upgrade with ${sync_file} ..."
 		/usr/bin/emsyncupgrade.py "${PORTAGE}/${sync_file}"
-		[ $? -gt 0 ] && em_logger "sync board upgrade failed!"
+		[ $? -lt 0 ] && em_logger "sync board upgrade failed!"
 	fi
 }
 
@@ -77,7 +77,7 @@ adc_board_upgrade() {
 	if [ -e "${adc_file}" ]; then
 		[ ${DEBUG} -gt 0 ] && em_logger "adc board upgrade with ${adc_file} ..."
 		/usr/bin/emadcupgrade.py "${PORTAGE}/${adc_file}"
-		[ $? -gt 0 ] && em_logger "adc board upgrade failed!"
+		[ $? -lt 0 ] && em_logger "adc board upgrade failed!"
 	fi
 }
 

@@ -48,8 +48,7 @@ class Tlv:
 
 
 class Packet(Tlv):
-    def __init__(self):
-        self.count = 0
+    count = 0
 
     def encode(self, tlv):
         self.count += 1
@@ -119,7 +118,7 @@ class Socket(Packet):
         ifaces = listdir('/sys/class/net/')
         iface = None
         for i in ifaces:
-            if i[0] == 'e':
+            if i[0] == 'b':
                 iface = i
                 break
         if iface is None:
@@ -128,59 +127,66 @@ class Socket(Packet):
             self.sock.fileno(), SIOCGIFADDR,
             struct.pack('256s', iface[:15].encode('utf-8')))[20:24])
         host = host.split('.')
-        host[3] = str(int(host[3] + IP_ADR_GAIN))
+        host[3] = str(int(host[3]) + IP_ADR_GAIN)
         return '.'.join(host)
 
     def _print_result(self, tag, value):
-        res = None
-        try:
-            if tag[0] == 0x32:
-                res = ('Fail', 'Ok')[value[0]]
-            elif tag[0] == 0x31:
-                res = value.decode()
-        except:
-            pass
-        if res:
-            self.dprint(res)
-        else:
-            self.dprint('tag=', b2a_hex(tag), ' value=', b2a_hex(value))
+        if self.debug > 1:
+            res = None
+            try:
+                if tag[0] == 0x32:
+                    res = ('Fail', 'Ok')[value[0]]
+                elif tag[0] == 0x31:
+                    res = value.decode()
+            except:
+                pass
+            if res:
+                self.dprint(res)
+            else:
+                self.dprint('tag=', b2a_hex(tag), ' value=', b2a_hex(value))
 
     def send_tlv(self, tag, data):
         tlv = self.make_tlv(tag, data)
-        # self.dprint(b2a_hex(tlv))
+        # self.dprint(str(b2a_hex(tlv)))
         msg = self.encode(tlv)
-        if self.debug:
-            self.dprint('To send: ', b2a_hex(msg))
+        if self.debug > 1:
+            self.dprint('To send: ' + str(b2a_hex(msg)))
         self.sock.sendto(msg, (self.host, self.port))
-        if self.debug:
+        if self.debug > 1:
             self.dprint('Server reply :')
         while True:
             reply = self.sock.recv(4096)
-            # self.dprint(b2a_hex(reply))
+            # self.dprint(str(b2a_hex(reply)))
             reply = self.decode(bytes(reply))
-            if self.debug:
-                self.dprint(b2a_hex(reply))
+            if self.debug > 1:
+                self.dprint(str(b2a_hex(reply)))
             rtag, value = self.break_tlv(reply)
             if rtag[0] != 0x81:
                 raise BaseException('Unknown tag ' + b2a_hex(tag).decode())
             # strip packet order number and crc
             rtag, value = self.break_tlv(bytes(value[2:-4]))
             if rtag == tag or rtag[0] in (0x31, 0x32):
-                if self.debug:
-                    self.dprint('tag=', b2a_hex(rtag), ' value=', b2a_hex(value))
+                if self.debug > 1:
+                    self.dprint('tag={} value={}'.format(b2a_hex(rtag), b2a_hex(value)))
                 break
         return rtag, value
 
     def versions_equal(self, path):
         # installed version
-        tag, value = self._send_tlv(bytes([0xF0]), bytes())
-        value = value[:3] + value[4:]
+        tag, value = self.send_tlv(bytes([0xF0]), bytes())
+        value = value[:3] + value[4:8]
         old_version = struct.unpack('<3BI', value)
 
-        with open(path, 'r') as f:
-            f.seek(-16, 2)
+        with open(path, 'rb') as f:
+            fsize = f.seek(0, 2)
+            f.seek(fsize - 16, 0)
             buf = f.read(7)
             new_version = struct.unpack('<3BI', buf)
+
+        syslog.syslog('sync board current ver.:{}.{}.{} ({}) new ver.:{}.{}.{} ({})'.
+            format(old_version[0], old_version[1], old_version[2], old_version[3],
+            new_version[0], new_version[1], new_version[2], new_version[3]))
+
         return old_version == new_version
 
     def adc_upgrade(self):
@@ -189,12 +195,13 @@ class Socket(Packet):
         if sz != 512 * 1024:
             raise BaseException('Bad file size:' + sz)
 
+        self.dprint('adc_upgrade')
         if self.versions_equal(image_path):
-            self.dprint('Versions are equal. Skeep adc board firmware upgrade.')
+            syslog.syslog('Versions are equal. Skeep adc board firmware upgrade.')
             return
 
         self.dprint('read device mode ...')
-        tag, value = self.sock.send_tlv(bytes([0xF5]), bytes())
+        tag, value = self.send_tlv(bytes([0xF5]), bytes())
         if tag[0] != 0xF5:
             raise BaseException('Read deviceMode failed!')
         mod = int(value[0])
@@ -203,14 +210,14 @@ class Socket(Packet):
         if mod == 0xFE:
             # service mode
             self.dprint('clear all firmware ...')
-            tag, value = self.sock.send_tlv(bytes([0xF4]), bytes([0]))
+            tag, value = self.send_tlv(bytes([0xF4]), bytes([0]))
             if tag[0] != 0xF4 or value[0] != 1:
                 raise BaseException('Clear all firmware failed!')
-            self.sock.send_tlv(bytes([0xF3]), bytes([0]))
+            self.send_tlv(bytes([0xF3]), bytes([0]))
 
         # reset last upgrade
         self.dprint('clear last firmware ...')
-        tag, value = self.sock.send_tlv(bytes([0xF1]), bytes([0]))
+        tag, value = self.send_tlv(bytes([0xF1]), bytes([0]))
         if tag[0] != 0xF1 or value[0] != 1:
             raise BaseException('Reset firmware failed!')
         i = 0
@@ -218,39 +225,49 @@ class Socket(Packet):
         with open(image_path, 'rb') as fw:
             buf = fw.read(1024)
             while buf:
-                tag, value = self.sock.send_tlv(bytes([0xF2]), buf)
+                tag, value = self.send_tlv(bytes([0xF2]), buf)
+                if self.debug > 1:
+                    self.dprint('{}'.format(i))
                 if tag[0] != 0xF2 or value[0] != 1:
                     raise BaseException("Write firmware failed!")
                 buf = fw.read(1024)
-                self.dprint(i)
                 i += 1
 
+            self.dprint('blocks written: {}'.format(i))
+
         self.dprint('reset device ...')
-        tag, value = self.sock.send_tlv(bytes([0xF3]), bytes([0]))
+        try:
+            tag, value = self.send_tlv(bytes([0xF3]), bytes([0]))
+        except socket.timeout:
+            pass
 
 
 def main():
+    '''
     try:
-        syslog.openlog('emupgrade')
-        ret = 0
-        Socket().adc_upgrade()
+    '''
+    syslog.openlog('emupgrade')
+    ret = -1
+    Socket().adc_upgrade()
+    ret = 0
+    '''
     except FileNotFoundError as e:
         syslog.syslog(e)
-        ret = 1
+        ret = -2
     except BaseException as e:
         syslog.syslog(e)
-        ret = 2
+        ret = -3
     except (ValueError or IndexError) as e:
         syslog.syslog(e)
-        ret = 3
+        ret = -4
     except socket.timeout:
         syslog.syslog('*** timeout')
-        ret = 4
-    except:
-        syslog.syslog('Unknown error!')
-        ret = 5
+        ret = -5
     finally:
+        if ret == -1:
+            syslog.syslog('Unknown error!')
         sys.exit(ret)
+    '''
 
 
 if __name__ == '__main__':
