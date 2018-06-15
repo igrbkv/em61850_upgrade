@@ -1,4 +1,4 @@
-VERSION = 0.0.0
+VERSION = 0.0.1
 SOURCES = emupgrade.sh emsyncupgrade.py emadcupgrade.py
 
 COMMIT := $(shell git log -n 1 --pretty=format:"%H")

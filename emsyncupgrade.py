@@ -1,20 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import sys
-import fcntl
-from os import listdir
 from binascii import crc32, b2a_hex
 import socket
-from os import path
 import struct
-import syslog
-
-SIOCGIFADDR = 0x8915
-IP_ADR_GAIN = 2
-DEBUG = 2
-MAX_ATTEMPTS = 15
-
 
 class Tlv:
     def make_tlv(self, tag, val):
@@ -50,10 +40,11 @@ class Tlv:
 
 
 class Packet(Tlv):
-    count = 0
+    def __init__(self):
+        self.count = 0
 
     def encode(self, tlv):
-        self.count = self.count + 1
+        self.count += 1
         arr = self.count.to_bytes(2, 'big')
         tlv = arr + tlv
         tlv = self.make_tlv([0x80], tlv + crc32(tlv).to_bytes(4, 'big'))
@@ -99,183 +90,192 @@ class Packet(Tlv):
         return ba
 
 
-class Socket(Packet):
-    def __init__(self):
+class TlvClient(Packet):
+    sock = None
+    host = '192.168.0.3'
+    port = 1234
+    value = bytearray()
+    debug = 0 
+
+    def _reopen_socket(self):
+        if self.sock:
+            self.sock.close()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(5.0)
-        # host = '10.0.40.177'
-        self.debug = DEBUG
-        self.value = bytearray()
-        self.host = self._host()
-        self.port = 1234
 
-    def dprint(self, msg):
-        if self.debug:
-            syslog.syslog(str(msg))
 
-    def _host(self):
-        """
-        sync_brd_ip = em_ip + IP_ADR_GAIN (e.g. 10.0.40.12 ==> 10.0.40.13)
-        """
-        # wait for ethernet initialization
-        iface = None
-        for attmpt in range(MAX_ATTEMPTS):
-            ifaces = listdir('/sys/class/net/')
-            for i in ifaces:
-                if i[0] == 'e':
-                    iface = i
-                    break
-            sleep(1)
-        if iface is None:
-            raise BaseException('Ethernet interface is not exist!')
-
-        ifaces = listdir('/sys/class/net/')
-        for i in ifaces:
-            if i[0] == 'b':
-                iface = i
-                break
-        if iface is None:
-            raise BaseException('Network interface not exist!')
-        host = socket.inet_ntoa(fcntl.ioctl(
-            self.sock.fileno(), SIOCGIFADDR,
-            struct.pack('256s', iface[:15].encode('utf-8')))[20:24])
-        host = host.split('.')
-        host[3] = str(int(host[3]) + IP_ADR_GAIN)
-        return '.'.join(host)
-
-    def _print_result(self, tag, value):
-        if self.debug > 1:
-            res = None
-            try:
-                if tag[0] == 0x32:
-                    res = ('Fail', 'Ok')[value[0]]
-                elif tag[0] == 0x31:
-                    res = value.decode()
-            except:
-                pass
-            if res:
-                self.dprint(res)
-            else:
-                self.dprint('tag=', b2a_hex(tag), ' value=', b2a_hex(value))
-
-    def send_tlv(self, tag, data):
+    def send_recv_tlv(self, tag, data):
         tlv = self.make_tlv(tag, data)
-        # self.dprint(b2a_hex(tlv))
+        # print(b2a_hex(tlv))
         msg = self.encode(tlv)
-        if self.debug > 1:
-            self.dprint('To send: ' + str(b2a_hex(msg)))
-        self.sock.sendto(msg, (self.host, self.port))
-        if self.debug > 1:
-            self.dprint('Server reply :')
-        while True:
-            reply = self.sock.recv(4096)
-            # self.dprint(b2a_hex(reply))
+        if self.debug:
+            print('To send: ', b2a_hex(msg))
+        try:
+            self._reopen_socket()
+            self.sock.sendto(msg, (self.host, self.port))
+        except socket.timeout:
+            raise NameError('Таймаут передачи')
+
+        if self.debug:
+            print('Server reply :')
+        for i in range(100):
+            try:
+                reply = self.sock.recv(4096)
+            except socket.timeout:
+                raise NameError('Таймаут ответа')
+            if self.debug:
+                print(b2a_hex(reply))
             reply = self.decode(bytes(reply))
-            if self.debug > 1:
-                self.dprint(b2a_hex(reply))
+            if self.debug:
+                print(b2a_hex(reply))
             rtag, value = self.break_tlv(reply)
             if rtag[0] != 0x81:
-                raise BaseException('Unknown tag ' + b2a_hex(tag).decode())
+                raise NameError('Неизвестный тег ответа ' + b2a_hex(tag).decode())
             # strip packet order number and crc
             rtag, value = self.break_tlv(bytes(value[2:-4]))
             if rtag == tag or rtag[0] in (0x31, 0x32):
-                if self.debug > 1:
-                    self.dprint('tag=' + str(b2a_hex(rtag)) + ' value=' + str(b2a_hex(value)))
-                break
-        return rtag, value
+                if self.debug:
+                    print('tag=', b2a_hex(rtag), ' value=', b2a_hex(value))
+                return rtag, value
+        raise NameError('Неизвестный ответ')
 
-    def versions_equal(self, path):
-        # installed version
-        tag, value = self.send_tlv(bytes([0xF0]), bytes())
-        value = value[2:9]
-        old_version = struct.unpack('<3BI', value)
-        new_version = None
-        with open(path, 'rb') as f:
-            fsize = f.seek(0, 2)
-            f.seek(fsize - 16, 0)
-            buf = f.read(7)
-            new_version = struct.unpack('<3BI', buf)
-        syslog.syslog('sync board current ver.:{}.{}.{} ({}) new ver.:{}.{}.{} ({})'.
-            format(old_version[0], old_version[1], old_version[2], old_version[3],
-            new_version[0], new_version[1], new_version[2], new_version[3]))
-        return old_version == new_version
+class Sync(TlvClient):
+    def _check_result(self, tag, value, err='Команда не выполнена'):
+        if tag[0] == 0x32:
+            if value[0] != 1:
+                raise NameError(err)
+        else:
+            raise NameError('Неверный ответ')
 
-    def sync_upgrade(self):
-        image_path = sys.argv[1]
-        sz = path.getsize(image_path)
-        if sz != 768 * 1024:
-            raise BaseException('Bad file size:' + sz)
-
-        self.dprint('sync_upgrade')
-        if self.versions_equal(image_path):
-            syslog.syslog('Versions are equal. Skeep sync board firmware upgrade.')
-            return
-
-        self.dprint('read device mode ...')
-        tag, value = self.send_tlv(bytes([0xC7]), bytes())
-        if tag[0] != 0xC7:
-            raise BaseException('Read deviceMode failed!')
-        mod = int(value[0])
-        if mod == 0xFF:
-            raise BaseException('The device is already in firmware update mode!')
-        if mod == 0xFE:
-            # service mode
-            self.dprint('clear all firmware ...')
-            tag, value = self.send_tlv(bytes([0xF4]), bytes([0]))
-            if tag[0] != 0xF4 or value[0] != 1:
-                raise BaseException('Clear all firmware failed!')
-            self.send_tlv(bytes([0xF3]), bytes([0]))
-
-        # reset last upgrade
-        self.dprint('clear last firmware ...')
-        tag, value = self.send_tlv(bytes([0xF1]), bytes([0]))
-        if tag[0] != 0xF1 or value[0] != 1:
-            raise BaseException('Reset firmware failed!')
-        i = 0
-        self.dprint('write firmware ...')
-        with open(image_path, 'rb') as fw:
-            buf = fw.read(1024)
-            while buf:
-                tag, value = self.send_tlv(bytes([0xF2]), buf)
-                if self.debug > 1:
-                    self.dprint('{}'.format(i))
-                if tag[0] != 0xF2 or value[0] != 1:
-                    raise BaseException("Write firmware failed!")
-                buf = fw.read(1024)
-                i += 1
-
-            self.dprint('blocks written: {}'.format(i))
-
-        self.dprint('reset device ...')
+    def set_devmode(self, mode):
+        cmd_name = 'Установка режима работы платы синхронизации:'
         try:
-            tag, value = self.send_tlv(bytes([0xF3]), bytes([0]))
-        except socket.timeout:
-            pass
+            data = bytearray()
+            mode = int(mode)
+            data += mode.to_bytes(1, 'little')
 
+            tag, value = self.send_recv_tlv(bytes([0xC8]), data)
+            self._check_result(tag, value)
 
-def main():
-    try:
-        syslog.openlog('emupgrade')
-        ret = -1
-        Socket().sync_upgrade()
-        ret = 0
-    except FileNotFoundError as e:
-        syslog.syslog(e)
-        ret = -2
-    except BaseException as e:
-        syslog.syslog(e)
-        ret = -3
-    except (ValueError or IndexError) as e:
-        syslog.syslog(e)
-        ret = -4
-    except socket.timeout:
-        syslog.syslog('*** timeout')
-        ret = -5
-    finally:
-        if ret == -1:
-            syslog.syslog('Unknown error!')
-        sys.exit(ret)
+        except NameError as e:
+            print(cmd_name, e)
+        except:
+            print(cmd_name, 'Неизвестная ошибка')
+        else:
+            return True
+        return False
+
+    def upgrade(self, rest):
+        # FIXME not tested
+        try:
+            cmd_name = 'Обновление прошивки:'
+            sz = path.getsize(rest)
+            if sz != 768 * 1024:
+                raise NameError('Неверный размер файла прошивки ' + sz)
+            if self.debug:
+                print('read device mode ...')
+            tag, value = self.send_recv_tlv(bytes([0xC7]), bytes())
+            mod = int(value[0])
+            if mod == 0xFF:
+                raise NameError('Плата уже в режиме обновления!')
+            if mod == 0xFE:
+                # service mode
+                if self.debug:
+                    print('clear all firmware ...')
+                tag, value = self.send_recv_tlv(bytes([0xF4]), bytes([0]))
+                self._check_result(tag, value, 'Ошибка очистки памяти')
+                self.send_recv_tlv(bytes([0xF3]), bytes([0]))
+
+            # reset last upgrade
+            if self.debug:
+                print('clear last firmware ...')
+            tag, value = self.send_recv_tlv(bytes([0xF1]), bytes([0]))
+            self._check_result(tag, value, 'Ошибка сброса прошивки!')
+            i = 0
+            if self.debug:
+                print('write firmware ...')
+            with open(rest, 'rb') as fw:
+                buf = fw.read(1024)
+                while buf:
+                    tag, value = self.send_recv_tlv(bytes([0xF2]), buf)
+                    self._check_result(tag, value, 'Ошибка записи прошивки!')
+                    buf = fw.read(1024)
+                    if self.debug:
+                        print(i)
+                    i += 1
+
+            if self.debug:
+                print('reset device ...')
+            try:
+                tag, value = self.send_recv_tlv(bytes([0xF3]), bytes([0]))
+            except:
+                # did not answer
+                pass
+
+        except FileNotFoundError as e:
+            print(cmd_name, e)
+        except NameError as e:
+            print(cmd_name, e)
+        except:
+            print(cmd_name, 'Неизвестная ошибка')
+        else:
+            return True
+        return False
+
+    def set_output(self, rest):
+        '''
+        set_output (<N> <output-mode> <frequency Hz> <impulse duration s> <pulse delay s>)
+        '''
+        mode = ('off', 'off', 'active', 'active and inversion')
+        cmd_name = 'Задание параметров выхода '
+        try:
+            rest = rest.split()
+            data = bytearray()
+
+            num = int(rest[0])
+            mod = int(rest[1])
+            freq = float(rest[2])
+            dur = float(rest[3])
+            delay = float(rest[4])
+            if num not in range(1, 5):
+                raise NameError('Неверный номер выхода ' + rest[0])
+            cmd_name = cmd_name + str(num) 
+            if mod not in range(0, len(mode)):
+                raise NameError('Неверный режим ' + mod)
+            if freq < 0.:
+                raise NameError('Неверная частота ' + freq)
+            if dur < 0.:
+                raise NameError('Неверная длительность импульса ' + dur)
+            if delay < 0.:
+                raise NameError('Неверная задержка импульса ' + delay)
+
+            data += mod.to_bytes(1, 'little')
+            data += struct.pack('<d', freq)
+            data += struct.pack('<d', dur)
+            data += struct.pack('<d', delay)
+
+            tag, value = self.send_recv_tlv(bytes([0xA1 + (num - 1) * 2]), data)
+            self._check_result(tag, value)
+
+        except ValueError as e:
+            print(cmd_name, 'Неверное значение аргумента: ', e)
+        except NameError as e:
+            print(cmd_name, e)
+        except:
+            print(cmd_name, 'Неизвестная ошибка')
+        else:
+            return True
+        return False
 
 
 if __name__ == '__main__':
-    main()
+    sync = Sync()
+    if not sync.set_devmode('3'):
+        sys.exit(1)
+
+    if len(sys.argv) == 2:
+        if sync.upgrade(sys.argv[1]):
+            pass
+        else:
+            sys.exit(1)
+
